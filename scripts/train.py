@@ -1,6 +1,7 @@
 import cv2
 import numpy
 import time
+import sys
 
 from threading import Lock
 from lib.utils import get_image_paths, get_folder
@@ -9,6 +10,8 @@ from plugins.PluginLoader import PluginLoader
 
 class TrainingProcessor(object):
     arguments = None
+    
+    preview_buffer = {}
 
     def __init__(self, subparser, command, description='default'):
         self.parse_arguments(description, subparser, command)
@@ -94,10 +97,10 @@ class TrainingProcessor(object):
         import threading
         self.stop = False
         self.save_now = False
-
+        listener = threading.Thread(target=self.listenerThread, args=(), kwargs={})
         thr = threading.Thread(target=self.processThread, args=(), kwargs={})
         thr.start()
-
+        listener.start()
         if self.arguments.preview:
             print('Using live preview')
             while True:
@@ -113,13 +116,8 @@ class TrainingProcessor(object):
                         self.save_now = True
                 except KeyboardInterrupt:
                     break
-        else:
-            input() # TODO how to catch a specific key instead of Enter?
-            # there isnt a good multiplatform solution: https://stackoverflow.com/questions/3523174/raw-input-in-python-without-pressing-enter
-
-        print("Exit requested! The trainer will complete its current cycle, save the models and quit (it can take up a couple of seconds depending on your training speed). If you want to kill it now, press Ctrl + c")
-        self.stop = True
         thr.join() # waits until thread finishes
+        listener.join()
 
     def processThread(self):
         print('Loading data, this may take a while...')
@@ -133,39 +131,24 @@ class TrainingProcessor(object):
         images_B = get_image_paths(self.arguments.input_B)
         trainer = PluginLoader.get_trainer(trainer)
         trainer = trainer(model, images_A, images_B, batch_size=self.arguments.batch_size)
+        epoch = 0
+        print('Starting. Press "Enter" to stop training and save model')
 
-        try:
-            print('Starting. Press "Enter" to stop training and save model')
-
-            for epoch in range(0, self.arguments.epochs):
-
-                save_iteration = epoch % self.arguments.save_interval == 0
-
-                trainer.train_one_step(epoch, self.show if (save_iteration or self.save_now) else None)
-
-                if save_iteration:
-                    model.save_weights()
-
-                if self.stop:
-                    model.save_weights()
-                    exit()
-
-                if self.save_now:
-                    model.save_weights()
-                    self.save_now = False
-
-        except KeyboardInterrupt:
-            try:
+        while(epoch < self.arguments.epochs and not self.stop):
+            save_iteration = epoch % self.arguments.save_interval == 0
+            trainer.train_one_step(epoch, self.show if (save_iteration or self.save_now) else None)
+                
+            epoch += 1
+              
+            if save_iteration:
                 model.save_weights()
-            except KeyboardInterrupt:
-                print('Saving model weights has been cancelled!')
-            exit(0)
-        except Exception as e:
-            print(e)
-            exit(1)
-    
-    preview_buffer = {}
 
+            if self.save_now:
+                model.save_weights()
+                self.save_now = False            
+            model.save_weights()
+        self.stop = True
+        
     def show(self, image, name=''):
         try:
             if self.arguments.preview:
@@ -176,3 +159,15 @@ class TrainingProcessor(object):
         except Exception as e:
             print("could not preview sample")
             print(e)
+    
+    def listenerThread(self):
+        print("listening")
+        while True:
+            try:
+                ch = char(sys.stdin.read(1) or 'b')
+                if ch == '\n':
+                    self.stop = True
+                    print("Exit requested! The trainer will complete its current cycle, save the models and quit (it can take up a couple of seconds depending on your training speed). If you want to kill it now, press Ctrl + c")
+                    break
+            except IOError:
+                break
