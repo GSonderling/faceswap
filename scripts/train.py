@@ -171,3 +171,4 @@ class TrainingProcessor(object):
                     break
             except IOError:
                 break
+
